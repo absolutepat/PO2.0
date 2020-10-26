@@ -1,0 +1,139 @@
+﻿using System;
+using System.Collections.Generic;
+using System.Security.Claims;
+using System.Security.Principal;
+using System.Web;
+using System.Web.Security;
+using System.Web.UI;
+using System.Web.UI.WebControls;
+using Microsoft.AspNet.Identity;
+using purchaseOrderProgram2.Models;
+using Microsoft.AspNet.Identity.Owin;
+
+namespace purchaseOrderProgram2
+{
+    public partial class SiteMaster : MasterPage
+    {
+        private const string AntiXsrfTokenKey = "__AntiXsrfToken";
+        private const string AntiXsrfUserNameKey = "__AntiXsrfUserName";
+        private string _antiXsrfTokenValue;
+
+        protected void Page_Init(object sender, EventArgs e)
+        {
+            // The code below helps to protect against XSRF attacks
+            var requestCookie = Request.Cookies[AntiXsrfTokenKey];
+            Guid requestCookieGuidValue;
+            if (requestCookie != null && Guid.TryParse(requestCookie.Value, out requestCookieGuidValue))
+            {
+                // Use the Anti-XSRF token from the cookie
+                _antiXsrfTokenValue = requestCookie.Value;
+                Page.ViewStateUserKey = _antiXsrfTokenValue;
+            }
+            else
+            {
+                // Generate a new Anti-XSRF token and save to the cookie
+                _antiXsrfTokenValue = Guid.NewGuid().ToString("N");
+                Page.ViewStateUserKey = _antiXsrfTokenValue;
+
+                var responseCookie = new HttpCookie(AntiXsrfTokenKey)
+                {
+                    HttpOnly = true,
+                    Value = _antiXsrfTokenValue
+                };
+                if (FormsAuthentication.RequireSSL && Request.IsSecureConnection)
+                {
+                    responseCookie.Secure = true;
+                }
+                Response.Cookies.Set(responseCookie);
+            }
+
+            Page.PreLoad += master_Page_PreLoad;
+        }
+
+        protected void master_Page_PreLoad(object sender, EventArgs e)
+        {
+            if (!IsPostBack)
+            {
+                // Set Anti-XSRF token
+                ViewState[AntiXsrfTokenKey] = Page.ViewStateUserKey;
+                ViewState[AntiXsrfUserNameKey] = Context.User.Identity.Name ?? String.Empty;
+            }
+            else
+            {
+                // Validate the Anti-XSRF token
+                if ((string)ViewState[AntiXsrfTokenKey] != _antiXsrfTokenValue
+                    || (string)ViewState[AntiXsrfUserNameKey] != (Context.User.Identity.Name ?? String.Empty))
+                {
+                    throw new InvalidOperationException("Validation of Anti-XSRF token failed.");
+                }
+            }
+        }
+
+        protected void Page_Load(object sender, EventArgs e)
+        {
+            var manager = Context.GetOwinContext().GetUserManager<ApplicationUserManager>();
+            ApplicationUser user = manager.FindByName(HttpContext.Current.User.Identity.Name.ToString());
+
+
+            if(Request.IsAuthenticated)
+            {
+                if (!manager.IsEmailConfirmed(user.Id))
+                    notConfirmedMessage.Visible = true;
+            }
+            else if (!lockDown(Request.Url.AbsolutePath))
+            {
+                Response.Redirect("~/Default.aspx");
+            }
+
+            //if (!Request.IsAuthenticated && ( (Request.Url.ToString().ToUpper() != (Request.Url.GetLeftPart(UriPartial.Authority) + "/Default.aspx").ToUpper()) && (Request.Url.ToString().ToUpper() != (Request.Url.GetLeftPart(UriPartial.Authority) + "/Default").ToUpper())))
+            //    Response.Redirect("~/Default.aspx");
+            //else if (Request.IsAuthenticated)
+            //{
+            //    if (!manager.IsEmailConfirmed(user.Id))
+            //        notConfirmedMessage.Visible = true;
+            //}   
+        }
+
+        protected bool lockDown(string absolutePath)
+        {
+            absolutePath = absolutePath.ToUpper();
+            List<string> allowedWithoutLogin = new List<string>();
+            allowedWithoutLogin.Add("/Default");
+            allowedWithoutLogin.Add("/Account/Confirm");
+            allowedWithoutLogin.Add("/Account/Forgot");            
+            allowedWithoutLogin.Add("/Account/Lockout");
+            allowedWithoutLogin.Add("/Account/ResetPassword");
+            allowedWithoutLogin.Add("/Account/ResetPasswordConfirmation");
+            bool returnMe = false;
+
+            foreach (string page in allowedWithoutLogin)
+            {
+                if (page.ToUpper() == absolutePath || (page + ".aspx").ToUpper() == absolutePath)
+                {
+                    returnMe = true;
+                }
+            }
+
+            return returnMe;
+        }
+
+        protected void ResendEmailConfirmation(object sender, EventArgs e)
+        {
+            var manager = Context.GetOwinContext().GetUserManager<ApplicationUserManager>();
+            ApplicationUser user = manager.FindByName(HttpContext.Current.User.Identity.Name.ToString());
+            string code = manager.GenerateEmailConfirmationToken(user.Id);
+            string callbackUrl = IdentityHelper.GetUserConfirmationRedirectUrl(code, user.Id, Request);
+
+            manager.SendEmail(user.Id, "Confirm your po2.0 account", callbackUrl);
+
+            notConfirmedMessage.Visible = false;
+            notConfirmedResent.Visible = true;
+        }
+
+        protected void LoggingOut(object sender, LoginCancelEventArgs e)
+        {
+            Context.GetOwinContext().Authentication.SignOut(DefaultAuthenticationTypes.ApplicationCookie);
+        }
+    }
+
+}
